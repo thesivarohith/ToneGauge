@@ -1,94 +1,75 @@
 """
 =============================================================================
- STEP 1 — Synthetic Audio Generator
  Edge-AI Acoustic Anomaly Detection Pipeline (Tech4Bharat 4.3)
- 
- Generates two WAV files:
-   • normal_pump.wav   (90 s) – healthy motor baseline
-   • anomaly_pump.wav  (30 s) – fault injection at the midpoint
+
+ 100% offline, acoustic-based early-warning system for machine breakdowns
+ in small MSME workshops (flour mills, lathe shops, pump stations).
+
+ Data source : MIMII Dataset (real-world industrial audio)
+ Pipeline    : Audio → Feature Extraction → Isolation Forest → Alert
 =============================================================================
 """
 
+import os
+import sys
 import numpy as np
-import soundfile as sf
+import librosa
+from scipy.fft import rfft, rfftfreq
 
-# ── Audio parameters ────────────────────────────────────────────────────────
-SR = 22050  # Sample rate (Hz) — matches librosa default
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════
 
-# ── Helper: generate a sine tone ────────────────────────────────────────────
-def tone(freq_hz: float, duration_s: float, sr: int = SR) -> np.ndarray:
-    """Pure sine wave at `freq_hz` for `duration_s` seconds."""
-    t = np.linspace(0, duration_s, int(sr * duration_s), endpoint=False)
-    return np.sin(2 * np.pi * freq_hz * t)
+NORMAL_AUDIO_PATH  = 'mimii_normal.wav'
+ANOMALY_AUDIO_PATH = 'mimii_abnormal.wav'
+
+# Validate that audio files exist before doing anything
+for fpath in [NORMAL_AUDIO_PATH, ANOMALY_AUDIO_PATH]:
+    if not os.path.isfile(fpath):
+        sys.exit(f"[ERROR] Audio file not found: {fpath}\n"
+                 f"        Place your MIMII WAV files in {os.getcwd()}/")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  1.  NORMAL PUMP  (90 seconds)
-#      Healthy motor: 50 Hz fundamental + 150 Hz / 300 Hz harmonics
-#      plus mild broadband white noise (σ = 0.02)
 # ═══════════════════════════════════════════════════════════════════════════
-NORMAL_DUR = 90  # seconds
-
-normal  = 0.50 * tone(50,  NORMAL_DUR)   # 50 Hz mains-frequency fundamental
-normal += 0.25 * tone(150, NORMAL_DUR)    # 3rd harmonic
-normal += 0.10 * tone(300, NORMAL_DUR)    # 6th harmonic
-
-# Mild mechanical noise floor
-rng = np.random.default_rng(seed=42)
-normal += 0.02 * rng.standard_normal(len(normal))
-
-# Peak-normalize to ±0.9 to leave headroom
-normal = 0.9 * (normal / np.max(np.abs(normal)))
-
-sf.write("normal_pump.wav", normal, SR, subtype="PCM_16")
-print(f"[✓] normal_pump.wav  — {NORMAL_DUR}s, {len(normal)} samples, SR={SR}")
-
-
+#
+#  STEP 1 — Load Real Audio (MIMII Dataset)
+#
+#  • sr=None preserves the native sample rate of the recording
+#  • mono=True downmixes to single channel if needed
+#
 # ═══════════════════════════════════════════════════════════════════════════
-#  2.  ANOMALY PUMP  (30 seconds)
-#      First half  (0–15 s)  : identical healthy motor profile
-#      Second half (15–30 s) : fault injection —
-#          • High-frequency turbulence at 850 Hz and 1800 Hz
-#          • +40 % load amplitude ramp (simulates hydraulic backpressure)
-#          • Increased noise floor (σ = 0.06)
 # ═══════════════════════════════════════════════════════════════════════════
-ANOM_DUR = 30
-HALF     = ANOM_DUR // 2   # fault onset at 15 s
 
-# --- healthy segment (first half) ---
-seg_ok  = 0.50 * tone(50,  HALF)
-seg_ok += 0.25 * tone(150, HALF)
-seg_ok += 0.10 * tone(300, HALF)
-seg_ok += 0.02 * rng.standard_normal(len(seg_ok))
+print("=" * 72)
+print("  STEP 1 — Loading Real Audio (MIMII Dataset)")
+print("=" * 72)
 
-# --- faulty segment (second half) ---
-n_fault = int(SR * HALF)
-t_fault = np.linspace(0, HALF, n_fault, endpoint=False)
+y_normal,  sr_normal  = librosa.load(NORMAL_AUDIO_PATH,  sr=None, mono=True)
+y_anomaly, sr_anomaly = librosa.load(ANOMALY_AUDIO_PATH, sr=None, mono=True)
 
-# Base motor (same harmonics)
-seg_fault  = 0.50 * np.sin(2 * np.pi * 50  * t_fault)
-seg_fault += 0.25 * np.sin(2 * np.pi * 150 * t_fault)
-seg_fault += 0.10 * np.sin(2 * np.pi * 300 * t_fault)
+# Use native sample rate (should be the same for both files)
+if sr_normal != sr_anomaly:
+    print(f"  [WARN] Sample rate mismatch: normal={sr_normal}, anomaly={sr_anomaly}")
+    print(f"         Resampling anomaly to {sr_normal} Hz...")
+    y_anomaly = librosa.resample(y_anomaly, orig_sr=sr_anomaly, target_sr=sr_normal)
 
-# ⚠ Fault signatures
-seg_fault += 0.30 * np.sin(2 * np.pi * 850  * t_fault)   # bearing-wear tone
-seg_fault += 0.20 * np.sin(2 * np.pi * 1800 * t_fault)   # high-freq turbulence
+SR = sr_normal
 
-# ⚠ Load amplitude ramp: linearly grows from 1.0× to 1.4× over the segment
-load_ramp = np.linspace(1.0, 1.4, n_fault)
-seg_fault *= load_ramp
+dur_normal  = len(y_normal) / SR
+dur_anomaly = len(y_anomaly) / SR
 
-# ⚠ Elevated noise floor
-seg_fault += 0.06 * rng.standard_normal(n_fault)
+print(f"\n  {NORMAL_AUDIO_PATH}")
+print(f"    Samples : {len(y_normal):,}")
+print(f"    SR      : {SR} Hz")
+print(f"    Duration: {dur_normal:.2f} s")
 
-# --- stitch & normalize ---
-anomaly = np.concatenate([seg_ok, seg_fault])
-anomaly = 0.9 * (anomaly / np.max(np.abs(anomaly)))
+print(f"\n  {ANOMALY_AUDIO_PATH}")
+print(f"    Samples : {len(y_anomaly):,}")
+print(f"    SR      : {SR} Hz")
+print(f"    Duration: {dur_anomaly:.2f} s")
 
-sf.write("anomaly_pump.wav", anomaly, SR, subtype="PCM_16")
-print(f"[✓] anomaly_pump.wav — {ANOM_DUR}s, {len(anomaly)} samples, SR={SR}")
-
-print("\n── Step 1 complete. Ready for Step 2 (Feature Extraction). ──")
+print("\n── Step 1 complete. ──")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -106,18 +87,15 @@ print("\n── Step 1 complete. Ready for Step 2 (Feature Extraction). ──")
 # ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
 
-import librosa
-from scipy.fft import rfft, rfftfreq
 
-
-def extract_features(wav_path: str, sr: int = SR, window_s: float = 1.0):
+def extract_features(wav_path: str, sr: int = None, window_s: float = 1.0):
     """
     Load `wav_path` and extract 5 features per non-overlapping window.
 
     Parameters
     ----------
     wav_path  : path to a mono WAV file
-    sr        : sample rate (Hz)
+    sr        : sample rate (Hz); None = use native rate
     window_s  : window length in seconds (default 1 s)
 
     Returns
@@ -125,10 +103,12 @@ def extract_features(wav_path: str, sr: int = SR, window_s: float = 1.0):
     features : np.ndarray of shape (n_windows, 5)
                Columns: [RMS, SpectralCentroid, SpectralBW, ZCR, HFER]
     """
-    y, _ = librosa.load(wav_path, sr=sr, mono=True)
+    y, file_sr = librosa.load(wav_path, sr=sr, mono=True)
+    if sr is None:
+        sr = file_sr
 
-    win_len  = int(sr * window_s)          # samples per window
-    n_windows = len(y) // win_len          # discard trailing partial window
+    win_len   = int(sr * window_s)          # samples per window
+    n_windows = len(y) // win_len           # discard trailing partial window
 
     feature_rows = []
 
@@ -178,12 +158,12 @@ print("\n" + "=" * 72)
 print("  STEP 2 — Feature Extraction (1-second windows)")
 print("=" * 72)
 
-normal_feats  = extract_features("normal_pump.wav")
-anomaly_feats = extract_features("anomaly_pump.wav")
+normal_feats  = extract_features(NORMAL_AUDIO_PATH,  sr=SR)
+anomaly_feats = extract_features(ANOMALY_AUDIO_PATH, sr=SR)
 
-print(f"\n  normal_pump.wav  → {normal_feats.shape[0]} windows × "
+print(f"\n  {NORMAL_AUDIO_PATH}  → {normal_feats.shape[0]} windows × "
       f"{normal_feats.shape[1]} features")
-print(f"  anomaly_pump.wav → {anomaly_feats.shape[0]} windows × "
+print(f"  {ANOMALY_AUDIO_PATH} → {anomaly_feats.shape[0]} windows × "
       f"{anomaly_feats.shape[1]} features")
 
 # ── Print summary statistics ────────────────────────────────────────────────
@@ -198,10 +178,10 @@ def _print_stats(name: str, feats: np.ndarray):
               f"{col.min():10.5f} {col.max():10.5f} │")
     print(f"  └{'─' * 62}┘")
 
-_print_stats("normal_pump.wav",  normal_feats)
-_print_stats("anomaly_pump.wav", anomaly_feats)
+_print_stats(NORMAL_AUDIO_PATH,  normal_feats)
+_print_stats(ANOMALY_AUDIO_PATH, anomaly_feats)
 
-print("\n── Step 2 complete. Ready for Step 3 (Model Training). ──")
+print("\n── Step 2 complete. ──")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -271,7 +251,9 @@ print("\n── Step 3 complete. ──")
 #  STEP 4 — Visualization & Output
 #
 #  Plot 1: FFT frequency comparison (normal vs. anomaly)
-#  Plot 2: 60-second anomaly severity timeline with alert threshold
+#  Plot 2: Anomaly severity timeline with alert threshold
+#
+#  Style: Clean white-background engineering-paper aesthetic.
 #
 # ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
@@ -285,34 +267,32 @@ print("\n" + "=" * 72)
 print("  STEP 4 — Visualization & Output")
 print("=" * 72)
 
-# ── Shared plot styling ─────────────────────────────────────────────────────
+# ── Clean engineering-paper plot styling ────────────────────────────────────
+plt.style.use("default")
 plt.rcParams.update({
-    "figure.facecolor":  "#0f0f0f",
-    "axes.facecolor":    "#0f0f0f",
-    "axes.edgecolor":    "#444444",
-    "axes.labelcolor":   "#cccccc",
-    "text.color":        "#cccccc",
-    "xtick.color":       "#999999",
-    "ytick.color":       "#999999",
-    "grid.color":        "#222222",
-    "grid.linestyle":    "--",
-    "grid.alpha":        0.6,
-    "legend.facecolor":  "#1a1a1a",
-    "legend.edgecolor":  "#333333",
     "font.size":         11,
+    "axes.grid":         True,
+    "grid.alpha":        0.3,
+    "grid.linestyle":    "--",
+    "axes.spines.top":   False,
+    "axes.spines.right": False,
 })
+
 
 # ════════════════════════════════════════════════════════════════════════════
 #  PLOT 1 — FFT Frequency Comparison (5-second slices)
 # ════════════════════════════════════════════════════════════════════════════
-# Load raw audio for FFT
-y_normal, _  = librosa.load("normal_pump.wav",  sr=SR, mono=True)
-y_anomaly, _ = librosa.load("anomaly_pump.wav", sr=SR, mono=True)
-
 SLICE_S  = 5  # seconds
 slice_n  = SR * SLICE_S
 
-# Normal: first 5 seconds  |  Anomaly: last 5 seconds (deep in the fault zone)
+# Ensure both signals are long enough for a 5-second slice
+if len(y_normal) < slice_n or len(y_anomaly) < slice_n:
+    # Fall back to whatever length fits
+    slice_n = min(len(y_normal), len(y_anomaly))
+    SLICE_S = slice_n / SR
+    print(f"\n  [NOTE] Audio shorter than 5 s — using {SLICE_S:.2f} s slices.")
+
+# Normal: first slice  |  Anomaly: last slice (deep in any fault zone)
 normal_slice  = y_normal[:slice_n]
 anomaly_slice = y_anomaly[-slice_n:]
 
@@ -322,34 +302,27 @@ mag_normal   = np.abs(scipy_rfft(normal_slice))
 mag_anomaly  = np.abs(scipy_rfft(anomaly_slice))
 
 # Normalize for visual comparison
-mag_normal  /= mag_normal.max()
-mag_anomaly /= mag_anomaly.max()
+mag_normal  /= (mag_normal.max() + 1e-12)
+mag_anomaly /= (mag_anomaly.max() + 1e-12)
 
 # Limit to 5000 Hz
 mask_5k = freq_axis <= 5000
 
 fig1, ax1 = plt.subplots(figsize=(14, 5))
 ax1.plot(freq_axis[mask_5k], mag_normal[mask_5k],
-         color="#00e676", linewidth=0.8, alpha=0.85, label="Normal (0–5 s)")
+         color="#2e7d32", linewidth=0.7, alpha=0.85,
+         label=f"Normal (first {SLICE_S:.0f} s)")
 ax1.plot(freq_axis[mask_5k], mag_anomaly[mask_5k],
-         color="#ff1744", linewidth=0.8, alpha=0.85, label="Anomaly (25–30 s)")
-
-# Annotate known fault frequencies
-for f_hz, lbl in [(850, "850 Hz\nbearing wear"), (1800, "1800 Hz\nturbulence")]:
-    ax1.axvline(f_hz, color="#ffd740", linewidth=0.9, linestyle=":", alpha=0.7)
-    ax1.annotate(lbl, xy=(f_hz, 0.92), fontsize=8, color="#ffd740",
-                 ha="center", va="top",
-                 bbox=dict(boxstyle="round,pad=0.2", fc="#1a1a1a", ec="#ffd740",
-                           alpha=0.8))
+         color="#c62828", linewidth=0.7, alpha=0.85,
+         label=f"Abnormal (last {SLICE_S:.0f} s)")
 
 ax1.set_xlabel("Frequency (Hz)")
 ax1.set_ylabel("Normalized Magnitude")
-ax1.set_title("FFT Frequency Comparison — Normal vs. Anomaly",
-              fontsize=14, fontweight="bold", color="white")
-ax1.legend(loc="upper right", fontsize=10)
+ax1.set_title("FFT Frequency Comparison — Normal vs. Abnormal (MIMII Dataset)",
+              fontsize=13, fontweight="bold")
+ax1.legend(loc="upper right", fontsize=10, framealpha=0.9)
 ax1.set_xlim(0, 5000)
 ax1.set_ylim(0, 1.05)
-ax1.grid(True)
 
 fig1.tight_layout()
 fig1.savefig("plot1_fft_comparison.png", dpi=300, bbox_inches="tight")
@@ -358,17 +331,21 @@ print("\n  [✓] Saved plot1_fft_comparison.png (300 dpi)")
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  PLOT 2 — Anomaly Severity Timeline (60 seconds)
+#  PLOT 2 — Anomaly Severity Timeline
 #
-#  Layout: first 30 s = normal machine → next 30 s = anomaly machine
-#  This simulates a continuous monitoring session where a fault develops.
+#  Concatenate normal scores + anomaly scores to simulate a continuous
+#  monitoring session where a fault develops.
 # ════════════════════════════════════════════════════════════════════════════
-# Take first 30 windows from normal scores
-n_timeline = 30
-timeline_normal  = normal_scores[:n_timeline]
-timeline_anomaly = anomaly_scores                   # already 30 windows
+# Use however many windows are available from each file
+n_normal_win  = len(normal_scores)
+n_anomaly_win = len(anomaly_scores)
 
-# Concatenate into a 60-second timeline
+# For the timeline, use up to the same number of normal windows as anomaly
+n_timeline = min(n_normal_win, n_anomaly_win)
+timeline_normal  = normal_scores[:n_timeline]
+timeline_anomaly = anomaly_scores[:n_timeline]
+
+# Concatenate into a combined timeline
 timeline_scores = np.concatenate([timeline_normal, timeline_anomaly])
 time_axis = np.arange(len(timeline_scores))         # seconds
 
@@ -376,43 +353,42 @@ fig2, ax2 = plt.subplots(figsize=(14, 5))
 
 # Score line
 ax2.plot(time_axis, timeline_scores,
-         color="#42a5f5", linewidth=1.6, zorder=3, label="Anomaly Score")
+         color="#1565c0", linewidth=1.4, zorder=3, label="Anomaly Score")
 
 # Alert threshold
-ax2.axhline(THRESHOLD, color="#ff1744", linewidth=1.2, linestyle="--",
-            alpha=0.9, label=f"Alert Threshold ({THRESHOLD})", zorder=2)
+ax2.axhline(THRESHOLD, color="#c62828", linewidth=1.2, linestyle="--",
+            alpha=0.8, label=f"Alert Threshold ({THRESHOLD})", zorder=2)
 
-# Shade red above threshold
+# Shade above threshold (alert zone)
 ax2.fill_between(
     time_axis, timeline_scores, THRESHOLD,
     where=(timeline_scores > THRESHOLD),
-    color="#ff1744", alpha=0.25, interpolate=True,
+    color="#c62828", alpha=0.15, interpolate=True,
     label="Alert Zone", zorder=1,
 )
 
-# Shade green below threshold
+# Shade below threshold (safe zone)
 ax2.fill_between(
     time_axis, timeline_scores, THRESHOLD,
     where=(timeline_scores <= THRESHOLD),
-    color="#00e676", alpha=0.10, interpolate=True, zorder=1,
+    color="#2e7d32", alpha=0.08, interpolate=True, zorder=1,
 )
 
 # Mark the boundary between normal & anomaly audio
-ax2.axvline(n_timeline, color="#ffd740", linewidth=1.0, linestyle=":",
-            alpha=0.8)
-ax2.annotate("← Normal Machine | Anomaly Machine →",
-             xy=(n_timeline, ax2.get_ylim()[1] if timeline_scores.max() > 0
-                 else 0.1),
-             fontsize=9, color="#ffd740", ha="center", va="bottom",
-             bbox=dict(boxstyle="round,pad=0.3", fc="#1a1a1a", ec="#ffd740",
-                       alpha=0.8))
+ax2.axvline(n_timeline, color="#555555", linewidth=1.0, linestyle=":",
+            alpha=0.7)
+y_top = timeline_scores.max() if timeline_scores.max() > 0 else 0.1
+ax2.annotate("← Normal Audio | Abnormal Audio →",
+             xy=(n_timeline, y_top),
+             fontsize=9, color="#333333", ha="center", va="bottom",
+             bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#999999",
+                       alpha=0.9))
 
 ax2.set_xlabel("Time (seconds)")
 ax2.set_ylabel("Anomaly Severity Score")
-ax2.set_title("Real-Time Anomaly Detection Timeline — Early Warning System",
-              fontsize=14, fontweight="bold", color="white")
-ax2.legend(loc="upper left", fontsize=10)
-ax2.grid(True)
+ax2.set_title("Real-Time Anomaly Detection Timeline — MIMII Benchmark",
+              fontsize=13, fontweight="bold")
+ax2.legend(loc="upper left", fontsize=10, framealpha=0.9)
 
 fig2.tight_layout()
 fig2.savefig("plot2_anomaly_timeline.png", dpi=300, bbox_inches="tight")
@@ -423,9 +399,10 @@ print("  [✓] Saved plot2_anomaly_timeline.png (300 dpi)")
 print("\n" + "=" * 72)
 print("  Pipeline complete — all outputs saved to workspace.")
 print("=" * 72)
-print("  Files:")
-print("    • normal_pump.wav")
-print("    • anomaly_pump.wav")
-print("    • plot1_fft_comparison.png")
-print("    • plot2_anomaly_timeline.png")
+print(f"  Audio:")
+print(f"    • {NORMAL_AUDIO_PATH}")
+print(f"    • {ANOMALY_AUDIO_PATH}")
+print(f"  Plots:")
+print(f"    • plot1_fft_comparison.png")
+print(f"    • plot2_anomaly_timeline.png")
 print("=" * 72)
