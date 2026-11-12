@@ -36,6 +36,10 @@ Preliminary: one machine ID and 30 clips per class, so the rates are rough. The 
 ## Scheduling agent (built)
 Given a detected anomaly and the shift end time entered by the owner, it proposes a 60-minute maintenance window starting 30 minutes after shift end and drafts a message to the mechanic. The message is a draft: nothing is sent or stopped without owner approval.
 
+## AI components
+- **Learning model:** an Isolation Forest (unsupervised machine learning) learns what normal sounds like from healthy audio only. No failure labels are needed.
+- **Agent:** a rule-based scheduler turns an anomaly and the owner's shift end into a suggested maintenance window and a drafted message. It runs the loop scan, flag, propose, wait for approval. It does not use a large language model, so it works offline.
+
 ## UI (designed prototype)
 Illustrative wireframes with placeholder values. Not connected to the pipeline.
 
