@@ -29,7 +29,7 @@ ToneGauge listens to a machine with a phone microphone, learns what normal sound
 Preliminary. One machine ID, one pump type.
 
 ## Scheduling agent (built)
-Given a detected anomaly and the shift end time entered by the owner, it proposes a [window length] maintenance window starting [offset] after shift end, and drafts a message to the mechanic. **Nothing is sent or stopped without owner approval.**
+Given a detected anomaly and the shift end time entered by the owner, it proposes a 60-minute maintenance window starting 30 minutes after shift end, and drafts a message to the mechanic. **The message is not sent; owner approval is required.**
 
 ## UI (designed prototype)
 Illustrative wireframes with placeholder values. Not connected to the pipeline.

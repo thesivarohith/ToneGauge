@@ -461,7 +461,8 @@ print("  [✓] Saved plot2_anomaly_timeline.png (300 dpi)")
 #  STEP 5 — Agentic AI: Maintenance Scheduler
 #
 #  If an anomaly is detected during a monitoring session, this function
-#  calculates a 30-minute idle window after the shift ends and drafts a
+#  calculates a 60-minute maintenance window after a 30-minute idle period
+#  following shift end and drafts a
 #  WhatsApp-style maintenance alert for the shop mechanic.
 #
 # ═══════════════════════════════════════════════════════════════════════════
@@ -474,9 +475,9 @@ def agentic_maintenance_scheduler(anomaly_detected: bool,
     """
     Agentic maintenance scheduling logic.
 
-    If an anomaly is detected, schedules a 30-minute maintenance window
-    beginning at shift_end_time and returns a formatted WhatsApp-style
-    message for the mechanic.
+    If an anomaly is detected, schedules a 60-minute maintenance window
+    beginning 30 minutes after shift_end_time and returns a formatted
+    WhatsApp-style draft for the mechanic.
 
     Parameters
     ----------
@@ -496,8 +497,9 @@ def agentic_maintenance_scheduler(anomaly_detected: bool,
         return (f"[{current_time.strftime('%H:%M')}] "
                 f"All readings normal. No maintenance action required.")
 
-    maintenance_end = shift_end_time + timedelta(minutes=30)
-    maintenance_window = (f"{shift_end_time.strftime('%H:%M')} – "
+    maintenance_start = shift_end_time + timedelta(minutes=30)
+    maintenance_end = maintenance_start + timedelta(minutes=60)
+    maintenance_window = (f"{maintenance_start.strftime('%H:%M')} – "
                           f"{maintenance_end.strftime('%H:%M')}")
 
     message = (
@@ -511,12 +513,12 @@ def agentic_maintenance_scheduler(anomaly_detected: bool,
         f"envelope. Possible causes: bearing wear, impeller imbalance,\n"
         f"or hydraulic backpressure.\n"
         f"\n"
-        f"Suggested 30-minute maintenance window: {maintenance_window}\n"
+        f"Suggested 60-minute maintenance window: {maintenance_window}\n"
         f"\n"
         f"Action: Inspect bearings, check alignment, listen for\n"
         f"abnormal rattle or grinding before next shift.\n"
         f"\n"
-        f"--- Sent via Edge-AI Monitor ---"
+        f"--- Drafted by ToneGauge; not sent. Owner approval required. ---"
     )
     return message
 
